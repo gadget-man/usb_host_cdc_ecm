@@ -179,6 +179,7 @@ extern "C"
         cdc_ecm_event_callback_t event_cb; //!< Event callback function for IP and ETH events
         void *callback_arg;                //!< User's argument passed to the event callback
         char *hostname;                    //!< Hostname for the device
+        char *nameserver;                  //!< Nameserver for the device
         char *if_key;                      //!< Interface key for the device
         char *if_desc;                     //!< Interface description for the device
     } cdc_ecm_params_t;

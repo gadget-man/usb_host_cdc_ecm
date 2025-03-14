@@ -13,6 +13,7 @@
 #include "freertos/semphr.h"
 #include "freertos/event_groups.h"
 #include "soc/soc_caps.h"
+#include "lwip/ip_addr.h"
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_event.h"
@@ -1616,12 +1617,29 @@ esp_err_t cdc_ecm_netif_init(cdc_ecm_dev_hdl_t cdc_hdl, cdc_ecm_params_t *params
 
     if (params->hostname)
     {
+        ESP_LOGI(TAG, "Setting hostname: %s", params->hostname);
         err = esp_netif_set_hostname(usb_netif, params->hostname);
         if (err != ESP_OK)
         {
             ESP_LOGE(TAG, "Failed to set hostname, error: %s", esp_err_to_name(err));
         }
+        free(params->hostname);
     }
+
+    if (params->nameserver)
+    {
+        if (strcmp(params->nameserver, "") == 0)
+        {
+            // Set DNS Server
+            esp_netif_dns_info_t dns;
+            dns.ip.u_addr.ip4.addr = ipaddr_addr(params->nameserver);
+            dns.ip.type = IPADDR_TYPE_V4;
+            ESP_ERROR_CHECK(esp_netif_set_dns_info(usb_netif, ESP_NETIF_DNS_MAIN, &dns));
+            ESP_LOGI(TAG, "Setting nameserver: %s", params->nameserver);
+        }
+        free(params->nameserver);
+    }
+
     esp_netif_action_start(usb_netif, 0, 0, 0);
 
     if (cdc_ecm_get_connection_status(cdc_dev))
@@ -1717,6 +1735,15 @@ static void cdc_ecm_task(void *arg)
 
         // Post an event to start the Ethernet connection.
         esp_event_post(ETH_EVENT, ETHERNET_EVENT_START, &usb_netif, sizeof(esp_netif_t *), portMAX_DELAY);
+        // send network connected state in case the device is already connected before registers were able to start.
+        if (network_connected)
+        {
+            esp_event_post(ETH_EVENT, ETHERNET_EVENT_CONNECTED, &usb_netif, sizeof(esp_netif_t *), portMAX_DELAY);
+        }
+        else
+        {
+            esp_event_post(ETH_EVENT, ETHERNET_EVENT_DISCONNECTED, &usb_netif, sizeof(esp_netif_t *), portMAX_DELAY);
+        }
 
         // Wait for the device to be disconnected before restarting the loop
         xSemaphoreTake(device_disconnected_sem, portMAX_DELAY);
@@ -1724,19 +1751,19 @@ static void cdc_ecm_task(void *arg)
         // ESP_LOGI(TAG, "Device disconnected");
         esp_event_post(ETH_EVENT, ETHERNET_EVENT_STOP, &usb_netif, sizeof(esp_netif_t *), portMAX_DELAY);
 
-        vTaskDelay(100);
-        if (params->event_cb)
-        {
-            esp_event_handler_unregister(ETH_EVENT, ESP_EVENT_ANY_ID, params->event_cb);
-            esp_event_handler_unregister(IP_EVENT, ESP_EVENT_ANY_ID, params->event_cb);
-            // esp_event_handler_unregister(IP_EVENT, IP_EVENT_TX_RX, params->event_cb);
-        }
         esp_netif_action_stop(usb_netif, 0, 0, 0);
         esp_netif_destroy(usb_netif);
         usb_netif = NULL;
         cdc_ecm_host_close(cdc_dev);
         cdc_ecm_host_uninstall();
         cdc_dev = NULL;
+        if (params->event_cb)
+        {
+            esp_event_handler_unregister(ETH_EVENT, ESP_EVENT_ANY_ID, params->event_cb);
+            esp_event_handler_unregister(IP_EVENT, ESP_EVENT_ANY_ID, params->event_cb);
+            // esp_event_handler_unregister(IP_EVENT, IP_EVENT_TX_RX, params->event_cb);
+        }
+        vTaskDelay(100);
     }
 }
 
