@@ -1623,7 +1623,7 @@ esp_err_t cdc_ecm_netif_init(cdc_ecm_dev_hdl_t cdc_hdl, cdc_ecm_params_t *params
         {
             ESP_LOGE(TAG, "Failed to set hostname, error: %s", esp_err_to_name(err));
         }
-        free(params->hostname);
+        // free(params->hostname); //not freed - needed in event of reconnection.
     }
 
     if (params->nameserver)
@@ -1706,6 +1706,7 @@ static void cdc_ecm_task(void *arg)
         size_t num_pids = sizeof(params->pids) / sizeof(params->pids[0]);
         while (err != ESP_OK)
         {
+            ESP_LOGD(TAG, "Trying to open USB device...");
             // Try both PID options
             for (size_t i = 0; i < num_pids; i++)
             {
@@ -1724,9 +1725,6 @@ static void cdc_ecm_task(void *arg)
 
         ESP_LOGD(TAG, "USB device connected, waiting for Ethernet connection");
 
-        // Initialize the network interface (event handler registrations are now in app_main)
-        cdc_ecm_netif_init(cdc_dev, params);
-
         if (params->event_cb)
         {
             esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, params->event_cb, NULL);
@@ -1735,15 +1733,20 @@ static void cdc_ecm_task(void *arg)
 
         // Post an event to start the Ethernet connection.
         esp_event_post(ETH_EVENT, ETHERNET_EVENT_START, &usb_netif, sizeof(esp_netif_t *), portMAX_DELAY);
+
+        // Initialize the network interface (event handler registrations are now in app_main)
+        cdc_ecm_netif_init(cdc_dev, params);
+
         // send network connected state in case the device is already connected before registers were able to start.
+
         if (network_connected)
         {
             esp_event_post(ETH_EVENT, ETHERNET_EVENT_CONNECTED, &usb_netif, sizeof(esp_netif_t *), portMAX_DELAY);
         }
-        else
-        {
-            esp_event_post(ETH_EVENT, ETHERNET_EVENT_DISCONNECTED, &usb_netif, sizeof(esp_netif_t *), portMAX_DELAY);
-        }
+        // else
+        // {
+        //     esp_event_post(ETH_EVENT, ETHERNET_EVENT_DISCONNECTED, &usb_netif, sizeof(esp_netif_t *), portMAX_DELAY);
+        // }
 
         // Wait for the device to be disconnected before restarting the loop
         xSemaphoreTake(device_disconnected_sem, portMAX_DELAY);
