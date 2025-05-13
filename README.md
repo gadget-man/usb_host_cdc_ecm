@@ -19,8 +19,10 @@ The following steps outline the typical API call pattern of the CDC-ACM Class Dr
 1. Specify CDC-ECM parameters via `static ece_ecm_params_t cdc_ecm_params`
 2. Initialise the CDC-ECM driver by calling `cdc_ecm_init(&cdc_ecm_params)`
 
+
 e.g.:
-`static cdc_ecm_params_t cdc_ecm_params = {
+```
+static cdc_ecm_params_t cdc_ecm_params = {
     .vid = 0x0BDA,
     .pids = {0x8152, 0x8153},
     .event_cb = netif_event_handler,
@@ -28,7 +30,8 @@ e.g.:
     .if_key = "cdc_ecm_host",
     .if_desc = "usb cdc ecm host device",
     .hostname = "Espressif CDC-ECM Host Device"
-}`
+}
+```
 
 
 
