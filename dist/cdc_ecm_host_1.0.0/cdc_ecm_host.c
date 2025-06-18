@@ -1645,20 +1645,6 @@ esp_err_t cdc_ecm_netif_init(cdc_ecm_dev_hdl_t cdc_hdl, cdc_ecm_params_t *params
     if (cdc_ecm_get_connection_status(cdc_dev))
         esp_netif_action_connected(usb_netif, NULL, 0, NULL);
 
-#ifdef CONFIG_MDNS_PREDEF_NETIF_ETH
-
-    esp_err_t err = mdns_register_netif(usb_netif);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Error registering mDNS to Ethernet interface");
-    }
-    else
-    {
-        ESP_LOGI(TAG, "Successfully registered mDNS to Ethernet interface");
-    }
-
-#endif
-
     return ESP_OK;
 }
 

@@ -6,5 +6,6 @@ tags:
   - usb_host
   - cdc
 url: https://github.com/gadget-man/usb_host_cdc_ecm
+license: "Apache-2.0"
 dependencies:
   idf: ">=5.4"
