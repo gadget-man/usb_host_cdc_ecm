@@ -9,8 +9,3 @@ url: https://github.com/gadget-man/usb_host_cdc_ecm
 license: "Apache-2.0"
 dependencies:
   idf: ">=5.4"
-  espressif/mdns:
-    version: "*"
-    require: public
-    rules:
-      - if: "$CONFIG{CONFIG_MDNS_PREDEF_NETIF_ETH} == true"
