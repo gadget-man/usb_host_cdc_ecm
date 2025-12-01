@@ -1453,6 +1453,7 @@ esp_err_t cdc_ecm_host_send_custom_request(cdc_ecm_dev_hdl_t cdc_hdl, uint8_t bm
     }
 
     ESP_GOTO_ON_FALSE(cdc_dev->ctrl_transfer->status == USB_TRANSFER_STATUS_COMPLETED, ESP_ERR_INVALID_RESPONSE, unblock, TAG, "Control transfer error");
+
     ret = ESP_OK;
     // For OUT transfers, we must transfer data ownership to user
     if (in_transfer)
@@ -1619,12 +1620,6 @@ static void usb_lib_task(void *arg)
  */
 static esp_err_t netif_transmit(void *h, void *buffer, size_t len)
 {
-    if (h == NULL)
-    {
-        ESP_LOGE(TAG, "CDC device handle is NULL!");
-        return ESP_FAIL;
-    }
-
     cdc_ecm_dev_hdl_t cdc_dev = (cdc_ecm_dev_hdl_t)h;
     size_t out_buf_len = cdc_dev->max_segment_size; // TODO: need to link this to buffer limits from config.
 
