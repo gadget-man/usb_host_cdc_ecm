@@ -1240,7 +1240,7 @@ esp_err_t cdc_ecm_set_multicast_filter(cdc_ecm_dev_hdl_t cdc_hdl, uint8_t *mac)
             0,
             cdc_dev->data.intf_desc->bInterfaceNumber,
             sizeof(mac) * 6,
-            mac);
+            (uint8_t *)&mac);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Unable to set Multicast Filter: %s", esp_err_to_name(err));
@@ -1323,17 +1323,9 @@ esp_err_t cdc_ecm_host_send_custom_request(cdc_ecm_dev_hdl_t cdc_hdl, uint8_t bm
 
     // For IN transfers we must transfer data ownership to CDC driver
     const bool in_transfer = bmRequestType & USB_BM_REQUEST_TYPE_DIR_IN;
-    if (in_transfer)
+    if (!in_transfer && wLength)
     {
-        uint16_t actual_data_length = cdc_dev->ctrl_transfer->actual_num_bytes - sizeof(usb_setup_packet_t);
-        uint16_t copy_length = (actual_data_length < wLength) ? actual_data_length : wLength;
-        memcpy(data, start_of_data, copy_length);
-    }
-    else
-    {
-        ESP_GOTO_ON_FALSE(
-            cdc_dev->ctrl_transfer->actual_num_bytes == cdc_dev->ctrl_transfer->num_bytes,
-            ESP_ERR_INVALID_RESPONSE, unblock, TAG, "Incorrect number of bytes transferred");
+        memcpy(start_of_data, data, wLength);
     }
 
     cdc_dev->ctrl_transfer->num_bytes = wLength + sizeof(usb_setup_packet_t);
@@ -1351,7 +1343,21 @@ esp_err_t cdc_ecm_host_send_custom_request(cdc_ecm_dev_hdl_t cdc_hdl, uint8_t bm
     }
 
     ESP_GOTO_ON_FALSE(cdc_dev->ctrl_transfer->status == USB_TRANSFER_STATUS_COMPLETED, ESP_ERR_INVALID_RESPONSE, unblock, TAG, "Control transfer error");
-
+    // For OUT transfers, enforce exact size; for IN transfers, allow a smaller transfer.
+    if (in_transfer)
+    {
+        // Ensure we have at least the header plus one byte of data.
+        ESP_GOTO_ON_FALSE(cdc_dev->ctrl_transfer->actual_num_bytes >= (sizeof(usb_setup_packet_t) + 1),
+                          ESP_ERR_INVALID_RESPONSE, unblock, TAG, "Insufficient data transferred");
+        uint16_t actual_data_length = cdc_dev->ctrl_transfer->actual_num_bytes - sizeof(usb_setup_packet_t);
+        uint16_t copy_length = (actual_data_length < wLength) ? actual_data_length : wLength;
+        memcpy(data, start_of_data, copy_length);
+    }
+    else
+    {
+        ESP_GOTO_ON_FALSE(cdc_dev->ctrl_transfer->actual_num_bytes == cdc_dev->ctrl_transfer->num_bytes,
+                          ESP_ERR_INVALID_RESPONSE, unblock, TAG, "Incorrect number of bytes transferred");
+    }
     ret = ESP_OK;
     // For OUT transfers, we must transfer data ownership to user
     if (in_transfer)
@@ -1513,11 +1519,6 @@ static void usb_lib_task(void *arg)
  */
 static esp_err_t netif_transmit(void *h, void *buffer, size_t len)
 {
-    if (h == NULL)
-    {
-        ESP_LOGE(TAG, "CDC device handle is NULL!");
-        return ESP_FAIL;
-    }
     cdc_ecm_dev_hdl_t cdc_dev = (cdc_ecm_dev_hdl_t)h;
     size_t out_buf_len = cdc_dev->max_segment_size; // TODO: need to link this to buffer limits from config.
 
@@ -1600,15 +1601,13 @@ esp_err_t cdc_ecm_netif_init(cdc_ecm_dev_hdl_t cdc_hdl, cdc_ecm_params_t *params
         return ESP_FAIL;
     }
 
-    cdc_ecm_dev_hdl_t dev = cdc_hdl;
-
-    esp_err_t err = esp_read_mac(dev->mac, ESP_MAC_ETH);
+    esp_err_t err = esp_read_mac(cdc_dev->mac, ESP_MAC_ETH);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to get MAC address: %s", esp_err_to_name(err));
         return err;
     }
-    esp_netif_set_mac(usb_netif, dev->mac);
+    esp_netif_set_mac(usb_netif, cdc_dev->mac);
 
     err = esp_netif_dhcpc_start(usb_netif);
     if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED)
@@ -1643,7 +1642,7 @@ esp_err_t cdc_ecm_netif_init(cdc_ecm_dev_hdl_t cdc_hdl, cdc_ecm_params_t *params
 
     esp_netif_action_start(usb_netif, 0, 0, 0);
 
-    if (cdc_ecm_get_connection_status(dev))
+    if (cdc_ecm_get_connection_status(cdc_dev))
         esp_netif_action_connected(usb_netif, NULL, 0, NULL);
 
     return ESP_OK;
