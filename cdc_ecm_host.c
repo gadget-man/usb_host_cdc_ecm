@@ -66,6 +66,8 @@ static SemaphoreHandle_t device_disconnected_sem;
 static bool network_connected = false;
 uint32_t link_speed = 0;
 
+static volatile bool s_stop_requested = false;
+
 // CDC-ECM driver object
 typedef struct
 {
@@ -1687,6 +1689,13 @@ static void cdc_ecm_task(void *arg)
 
     while (true)
     {
+        // Add simple check here that we want to connect, if not then pause and continue.
+        if (s_stop_requested)
+        {
+            vTaskDelay(100);
+            continue;
+        }
+
         ESP_ERROR_CHECK(cdc_ecm_host_install(NULL));
 
         const cdc_ecm_host_device_config_t dev_config = {
@@ -1706,6 +1715,10 @@ static void cdc_ecm_task(void *arg)
         size_t num_pids = sizeof(params->pids) / sizeof(params->pids[0]);
         while (err != ESP_OK)
         {
+            if (s_stop_requested) // If we're in this loop, check again that we want to connect, if not break the while.
+            {
+                break;
+            }
             ESP_LOGD(TAG, "Trying to open USB device...");
             // Try both PID options
             for (size_t i = 0; i < num_pids; i++)
@@ -1778,4 +1791,26 @@ void cdc_ecm_init(cdc_ecm_params_t *cdc_ecm_params)
     // Create the task that handles the host installation and connection loop.
     BaseType_t task_created = xTaskCreate(cdc_ecm_task, "cdc_ecm_task", 1024 * 4, cdc_ecm_params, CDC_ECM_USB_HOST_PRIORITY, NULL);
     assert(task_created == pdTRUE);
+}
+
+// Called from outside (e.g. charging_callback) to request a clean shutdown
+void cdc_ecm_request_stop(void)
+{
+    s_stop_requested = true;
+
+    // // Wake up cdc_ecm_task if it's blocked waiting on disconnect
+    // if (device_disconnected_sem != NULL)
+    // {
+    //     xSemaphoreGive(device_disconnected_sem);
+    // }
+}
+
+void cdc_ecm_clear_stop_request(void)
+{
+    s_stop_requested = false;
+}
+
+bool cdc_ecm_is_stop_requested(void)
+{
+    return s_stop_requested;
 }

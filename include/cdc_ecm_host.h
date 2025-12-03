@@ -195,6 +195,33 @@ extern "C"
     void cdc_ecm_init(cdc_ecm_params_t *cdc_ecm_params);
 
     /**
+     * @brief Register CDC-ECM stop request
+     * PN COMPLETED
+     *
+     *
+     * @return
+     */
+    void cdc_ecm_request_stop(void);
+
+    /**
+     * @brief Clear CDC-ECM stop request
+     * PN COMPLETED
+     *
+     *
+     * @return
+     */
+    void cdc_ecm_clear_stop_request(void);
+
+    /**
+     * @brief Return CDC-ECM stop request status
+     * PN COMPLETED
+     *
+     *
+     * @return
+     */
+    bool cdc_ecm_is_stop_requested(void);
+
+    /**
      * @brief Install CDC-ECM driver
      * PN COMPLETED
      *
