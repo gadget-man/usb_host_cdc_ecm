@@ -62,12 +62,14 @@ static portMUX_TYPE cdc_ecm_lock = portMUX_INITIALIZER_UNLOCKED;
 cdc_ecm_dev_hdl_t cdc_dev = NULL;
 esp_netif_t *usb_netif = NULL;
 static SemaphoreHandle_t device_disconnected_sem;
-static SemaphoreHandle_t device_paused_sem;
+// static SemaphoreHandle_t device_paused_sem;
 
 static bool network_connected = false;
 uint32_t link_speed = 0;
 
 static volatile bool s_stop_requested = false;
+static TaskHandle_t s_cdc_ecm_task_handle = NULL;
+static TaskHandle_t s_usb_lib_task_handle = NULL;
 
 // CDC-ECM driver object
 typedef struct
@@ -1495,11 +1497,22 @@ static void cdc_ecm_host_device_event_handler(const cdc_ecm_host_dev_event_data_
  */
 static void usb_lib_task(void *arg)
 {
-    while (1)
+    s_usb_lib_task_handle = xTaskGetCurrentTaskHandle();
+
+    while (!s_stop_requested)
     {
         // Start handling system events
         uint32_t event_flags;
-        usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
+        esp_err_t err = usb_host_lib_handle_events(pdMS_TO_TICKS(100), &event_flags);
+        if (err == ESP_ERR_TIMEOUT)
+        {
+            continue;
+        }
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "USB host event loop error: %s", esp_err_to_name(err));
+            continue;
+        }
         if (event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS)
         {
             esp_err_t err = usb_host_device_free_all();
@@ -1514,6 +1527,9 @@ static void usb_lib_task(void *arg)
             // Continue handling USB events to allow device reconnection
         }
     }
+
+    s_usb_lib_task_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 /**
@@ -1671,11 +1687,13 @@ static bool set_config_cb(const usb_device_desc_t *dev_desc, uint8_t *bConfigura
 static void cdc_ecm_task(void *arg)
 {
     cdc_ecm_params_t *params = (cdc_ecm_params_t *)arg;
+    s_cdc_ecm_task_handle = xTaskGetCurrentTaskHandle();
+    bool event_handlers_registered = false;
 
     device_disconnected_sem = xSemaphoreCreateBinary();
     assert(device_disconnected_sem);
-    device_paused_sem = xSemaphoreCreateBinary();
-    assert(device_paused_sem);
+    // device_paused_sem = xSemaphoreCreateBinary();
+    // assert(device_paused_sem);
 
     // Install USB Host driver (should only be done once)
     ESP_LOGI(TAG, "Installing USB Host");
@@ -1687,19 +1705,11 @@ static void cdc_ecm_task(void *arg)
     ESP_ERROR_CHECK(usb_host_install(&host_config));
 
     // Create a task that will handle USB library events
-    BaseType_t task_created = xTaskCreate(usb_lib_task, "usb_lib", 4096, xTaskGetCurrentTaskHandle(), CDC_ECM_USB_HOST_PRIORITY, NULL);
+    BaseType_t task_created = xTaskCreate(usb_lib_task, "usb_lib", 4096, xTaskGetCurrentTaskHandle(), CDC_ECM_USB_HOST_PRIORITY, &s_usb_lib_task_handle);
     assert(task_created == pdTRUE);
 
-    while (true)
+    while (!s_stop_requested)
     {
-        // Add simple check here that we want to connect, if not then pause and continue.
-        if (s_stop_requested)
-        {
-            ESP_LOGI(TAG, "USB over Ethernet paused");
-            xSemaphoreTake(device_paused_sem, portMAX_DELAY);
-            ESP_LOGI(TAG, "USB over Ethernet resuming...");
-        }
-
         ESP_ERROR_CHECK(cdc_ecm_host_install(NULL));
 
         const cdc_ecm_host_device_config_t dev_config = {
@@ -1721,6 +1731,7 @@ static void cdc_ecm_task(void *arg)
         {
             if (s_stop_requested) // If we're in this loop, check again that we want to connect, if not break the while.
             {
+                ESP_LOGD(TAG, "CDC-ECM Stop requested, breaking device connection loop");
                 break;
             }
             ESP_LOGD(TAG, "Trying to open USB device...");
@@ -1740,12 +1751,19 @@ static void cdc_ecm_task(void *arg)
             }
         }
 
+        if (s_stop_requested || err != ESP_OK)
+        {
+            cdc_ecm_host_uninstall();
+            break;
+        }
+
         ESP_LOGD(TAG, "USB device connected, waiting for Ethernet connection");
 
         if (params->event_cb)
         {
             esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, params->event_cb, NULL);
             esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, params->event_cb, NULL);
+            event_handlers_registered = true;
         }
 
         // Post an event to start the Ethernet connection.
@@ -1769,22 +1787,49 @@ static void cdc_ecm_task(void *arg)
         xSemaphoreTake(device_disconnected_sem, portMAX_DELAY);
 
         // ESP_LOGI(TAG, "Device disconnected");
-        esp_event_post(ETH_EVENT, ETHERNET_EVENT_STOP, &usb_netif, sizeof(esp_netif_t *), portMAX_DELAY);
+        if (usb_netif)
+        {
+            esp_event_post(ETH_EVENT, ETHERNET_EVENT_STOP, &usb_netif, sizeof(esp_netif_t *), portMAX_DELAY);
 
-        esp_netif_action_stop(usb_netif, 0, 0, 0);
-        esp_netif_destroy(usb_netif);
-        usb_netif = NULL;
-        cdc_ecm_host_close(cdc_dev);
+            esp_netif_action_stop(usb_netif, 0, 0, 0);
+            esp_netif_destroy(usb_netif);
+            usb_netif = NULL;
+        }
+        if (cdc_dev)
+        {
+            cdc_ecm_host_close(cdc_dev);
+            cdc_dev = NULL;
+        }
         cdc_ecm_host_uninstall();
-        cdc_dev = NULL;
-        if (params->event_cb)
+        if (event_handlers_registered)
         {
             esp_event_handler_unregister(ETH_EVENT, ESP_EVENT_ANY_ID, params->event_cb);
             esp_event_handler_unregister(IP_EVENT, ESP_EVENT_ANY_ID, params->event_cb);
+            event_handlers_registered = false;
             // esp_event_handler_unregister(IP_EVENT, IP_EVENT_TX_RX, params->event_cb);
+        }
+        if (s_stop_requested)
+        {
+            break;
         }
         vTaskDelay(100);
     }
+
+    while (s_usb_lib_task_handle != NULL)
+    {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    esp_err_t uninstall_err = usb_host_uninstall();
+    if (uninstall_err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "USB host uninstall failed: %s", esp_err_to_name(uninstall_err));
+    }
+    vSemaphoreDelete(device_disconnected_sem);
+    device_disconnected_sem = NULL;
+    // vSemaphoreDelete(device_paused_sem);
+    // device_paused_sem = NULL;
+    s_cdc_ecm_task_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 /// This function initializes the CDC-ECM subsystem by creating the task.
@@ -1792,15 +1837,28 @@ static void cdc_ecm_task(void *arg)
 void cdc_ecm_init(cdc_ecm_params_t *cdc_ecm_params)
 {
     assert(cdc_ecm_params != NULL);
+    s_stop_requested = false;
     // Create the task that handles the host installation and connection loop.
-    BaseType_t task_created = xTaskCreate(cdc_ecm_task, "cdc_ecm_task", 1024 * 4, cdc_ecm_params, CDC_ECM_USB_HOST_PRIORITY, NULL);
+    BaseType_t task_created = xTaskCreate(cdc_ecm_task, "cdc_ecm_task", 1024 * 4, cdc_ecm_params, CDC_ECM_USB_HOST_PRIORITY, &s_cdc_ecm_task_handle);
     assert(task_created == pdTRUE);
 }
 
-// TODO: ADD cdc_ecm_deinit function to delete the task and cleanup.
-void cdc_edm_deinit(void)
+void cdc_ecm_deinit(void)
 {
-    // Not implemented yet
+    cdc_ecm_request_stop();
+
+    // if (device_disconnected_sem != NULL)
+    // {
+    //     xSemaphoreGive(device_disconnected_sem);
+    // }
+    // if (device_paused_sem != NULL)
+    // {
+    //     xSemaphoreGive(device_paused_sem);
+    // }
+    while (s_cdc_ecm_task_handle != NULL)
+    {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 }
 
 // Called from outside (e.g. charging_callback) to request a clean shutdown
@@ -1808,21 +1866,24 @@ void cdc_ecm_request_stop(void)
 {
     s_stop_requested = true;
 
-    // // Wake up cdc_ecm_task if it's blocked waiting on disconnect
-    // if (device_disconnected_sem != NULL)
+    // if (device_paused_sem != NULL)
     // {
-    //     xSemaphoreGive(device_disconnected_sem);
+    //     xSemaphoreGive(device_paused_sem);
     // }
-}
-
-void cdc_ecm_clear_stop_request(void)
-{
-    s_stop_requested = false;
-    if (device_paused_sem != NULL)
+    if (device_disconnected_sem != NULL)
     {
-        xSemaphoreGive(device_paused_sem);
+        xSemaphoreGive(device_disconnected_sem);
     }
 }
+
+// void cdc_ecm_clear_stop_request(void)
+// {
+//     s_stop_requested = false;
+//     if (device_paused_sem != NULL)
+//     {
+//         xSemaphoreGive(device_paused_sem);
+//     }
+// }
 
 bool cdc_ecm_is_stop_requested(void)
 {
