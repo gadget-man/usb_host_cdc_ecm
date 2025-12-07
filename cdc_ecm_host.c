@@ -62,6 +62,7 @@ static portMUX_TYPE cdc_ecm_lock = portMUX_INITIALIZER_UNLOCKED;
 cdc_ecm_dev_hdl_t cdc_dev = NULL;
 esp_netif_t *usb_netif = NULL;
 static SemaphoreHandle_t device_disconnected_sem;
+static SemaphoreHandle_t device_paused_sem;
 
 static bool network_connected = false;
 uint32_t link_speed = 0;
@@ -1673,6 +1674,8 @@ static void cdc_ecm_task(void *arg)
 
     device_disconnected_sem = xSemaphoreCreateBinary();
     assert(device_disconnected_sem);
+    device_paused_sem = xSemaphoreCreateBinary();
+    assert(device_paused_sem);
 
     // Install USB Host driver (should only be done once)
     ESP_LOGI(TAG, "Installing USB Host");
@@ -1692,8 +1695,9 @@ static void cdc_ecm_task(void *arg)
         // Add simple check here that we want to connect, if not then pause and continue.
         if (s_stop_requested)
         {
-            vTaskDelay(100);
-            continue;
+            ESP_LOGI(TAG, "USB over Ethernet paused");
+            xSemaphoreTake(device_paused_sem, portMAX_DELAY);
+            ESP_LOGI(TAG, "USB over Ethernet resuming...");
         }
 
         ESP_ERROR_CHECK(cdc_ecm_host_install(NULL));
@@ -1793,6 +1797,12 @@ void cdc_ecm_init(cdc_ecm_params_t *cdc_ecm_params)
     assert(task_created == pdTRUE);
 }
 
+// TODO: ADD cdc_ecm_deinit function to delete the task and cleanup.
+void cdc_edm_deinit(void)
+{
+    // Not implemented yet
+}
+
 // Called from outside (e.g. charging_callback) to request a clean shutdown
 void cdc_ecm_request_stop(void)
 {
@@ -1808,6 +1818,10 @@ void cdc_ecm_request_stop(void)
 void cdc_ecm_clear_stop_request(void)
 {
     s_stop_requested = false;
+    if (device_paused_sem != NULL)
+    {
+        xSemaphoreGive(device_paused_sem);
+    }
 }
 
 bool cdc_ecm_is_stop_requested(void)

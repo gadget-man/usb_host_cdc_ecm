@@ -195,6 +195,15 @@ extern "C"
     void cdc_ecm_init(cdc_ecm_params_t *cdc_ecm_params);
 
     /**
+     * @brief De-Initialise CDC-ECM process
+     * PN COMPLETED
+     *
+     *
+     * @return
+     */
+    void cdc_ecm_deinit(void);
+
+    /**
      * @brief Register CDC-ECM stop request
      * PN COMPLETED
      *
