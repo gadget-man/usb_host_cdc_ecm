@@ -1778,7 +1778,7 @@ static void cdc_ecm_task(void *arg)
     ESP_ERROR_CHECK(usb_host_install(&host_config));
 
     // Create a task that will handle USB library events
-    BaseType_t task_created = xTaskCreate(usb_lib_task, "usb_lib", 4096, xTaskGetCurrentTaskHandle(), CDC_ECM_USB_HOST_PRIORITY, &s_usb_lib_task_handle);
+    BaseType_t task_created = xTaskCreateWithCaps(usb_lib_task, "usb_lib", 4096, xTaskGetCurrentTaskHandle(), CDC_ECM_USB_HOST_PRIORITY, &s_usb_lib_task_handle, MALLOC_CAP_SPIRAM);
     assert(task_created == pdTRUE);
 
     while (!s_stop_requested)
@@ -1914,7 +1914,7 @@ void cdc_ecm_init(cdc_ecm_params_t *cdc_ecm_params)
     assert(cdc_ecm_params != NULL);
     s_stop_requested = false;
     // Create the task that handles the host installation and connection loop.
-    BaseType_t task_created = xTaskCreate(cdc_ecm_task, "cdc_ecm_task", 1024 * 4, cdc_ecm_params, CDC_ECM_USB_HOST_PRIORITY, &s_cdc_ecm_task_handle);
+    BaseType_t task_created = xTaskCreateWithCaps(cdc_ecm_task, "cdc_ecm_task", 1024 * 4, cdc_ecm_params, CDC_ECM_USB_HOST_PRIORITY, &s_cdc_ecm_task_handle, MALLOC_CAP_SPIRAM);
     assert(task_created == pdTRUE);
 }
 
