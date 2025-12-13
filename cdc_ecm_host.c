@@ -1918,47 +1918,16 @@ void cdc_ecm_init(cdc_ecm_params_t *cdc_ecm_params)
     assert(task_created == pdTRUE);
 }
 
-// void cdc_ecm_deinit(void)
-// {
-//     cdc_ecm_request_stop();
-
-//     // if (device_disconnected_sem != NULL)
-//     // {
-//     //     xSemaphoreGive(device_disconnected_sem);
-//     // }
-//     // if (device_paused_sem != NULL)
-//     // {
-//     //     xSemaphoreGive(device_paused_sem);
-//     // }
-//     // while (s_cdc_ecm_task_handle != NULL)
-//     // {
-//     //     vTaskDelay(pdMS_TO_TICKS(10));
-//     // }
-// }
-
 // Called from outside (e.g. charging_callback) to request a clean shutdown
 void cdc_ecm_deinit(void)
 {
     s_stop_requested = true;
 
-    // if (device_paused_sem != NULL)
-    // {
-    //     xSemaphoreGive(device_paused_sem);
-    // }
     if (device_disconnected_sem != NULL)
     {
         xSemaphoreGive(device_disconnected_sem);
     }
 }
-
-// void cdc_ecm_clear_stop_request(void)
-// {
-//     s_stop_requested = false;
-//     if (device_paused_sem != NULL)
-//     {
-//         xSemaphoreGive(device_paused_sem);
-//     }
-// }
 
 bool cdc_ecm_is_stop_requested(void)
 {
