@@ -32,7 +32,7 @@ static const char *TAG = "cdc_ecm";
 // Control transfer constants
 #define CDC_ECM_CTRL_TRANSFER_SIZE (64) // All standard CTRL requests and responses fit in this size
 #define CDC_ECM_CTRL_TIMEOUT_MS (5000)  // Every CDC device should be able to respond to CTRL transfer in 5 seconds
-#define CDC_ECM_USB_HOST_PRIORITY (20)
+#define CDC_ECM_USB_HOST_PRIORITY (15)
 
 // CDC-ECM spinlock
 static portMUX_TYPE cdc_ecm_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -1555,6 +1555,7 @@ static void usb_lib_task(void *arg)
             {
                 break;
             }
+            vTaskDelay(1);
             continue;
         }
 
@@ -1566,6 +1567,7 @@ static void usb_lib_task(void *arg)
             {
                 break;
             }
+            vTaskDelay(1);
             continue;
         }
 
@@ -1596,6 +1598,7 @@ static void usb_lib_task(void *arg)
         {
             break;
         }
+        vTaskDelay(1);
     }
 
     s_usb_lib_task_handle = NULL;
@@ -1698,12 +1701,6 @@ esp_err_t cdc_ecm_netif_init(cdc_ecm_dev_hdl_t cdc_hdl, cdc_ecm_params_t *params
     }
     esp_netif_set_mac(usb_netif, cdc_dev->mac);
 
-    err = esp_netif_dhcpc_start(usb_netif);
-    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED)
-    {
-        ESP_LOGE(TAG, "Failed to start DHCP client: %s", esp_err_to_name(err));
-    }
-
     if (params->hostname)
     {
         ESP_LOGI(TAG, "Setting hostname: %s", params->hostname);
@@ -1717,7 +1714,7 @@ esp_err_t cdc_ecm_netif_init(cdc_ecm_dev_hdl_t cdc_hdl, cdc_ecm_params_t *params
 
     if (params->nameserver)
     {
-        if (strcmp(params->nameserver, "") == 0)
+        if (strcmp(params->nameserver, "") != 0)
         {
             // Set DNS Server
             esp_netif_dns_info_t dns;
@@ -1730,6 +1727,12 @@ esp_err_t cdc_ecm_netif_init(cdc_ecm_dev_hdl_t cdc_hdl, cdc_ecm_params_t *params
     }
 
     esp_netif_action_start(usb_netif, 0, 0, 0);
+
+    err = esp_netif_dhcpc_start(usb_netif);
+    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED)
+    {
+        ESP_LOGE(TAG, "Failed to start DHCP client: %s", esp_err_to_name(err));
+    }
 
     if (cdc_ecm_get_connection_status(cdc_dev))
         esp_netif_action_connected(usb_netif, NULL, 0, NULL);
@@ -1824,7 +1827,7 @@ static void cdc_ecm_task(void *arg)
         if (s_stop_requested || err != ESP_OK)
         {
             ESP_LOGD(TAG, "CDC-ECM Stop requested or error occurred, breaking device connection loop");
-            cdc_ecm_host_uninstall();
+            // cdc_ecm_host_uninstall();
             break;
         }
 
@@ -1862,6 +1865,7 @@ static void cdc_ecm_task(void *arg)
         {
             esp_event_post(ETH_EVENT, ETHERNET_EVENT_STOP, &usb_netif, sizeof(esp_netif_t *), portMAX_DELAY);
 
+            esp_netif_dhcpc_stop(usb_netif); // ignore error if already stopped
             esp_netif_action_stop(usb_netif, 0, 0, 0);
             esp_netif_destroy(usb_netif);
             usb_netif = NULL;
@@ -1914,26 +1918,26 @@ void cdc_ecm_init(cdc_ecm_params_t *cdc_ecm_params)
     assert(task_created == pdTRUE);
 }
 
-void cdc_ecm_deinit(void)
-{
-    cdc_ecm_request_stop();
+// void cdc_ecm_deinit(void)
+// {
+//     cdc_ecm_request_stop();
 
-    // if (device_disconnected_sem != NULL)
-    // {
-    //     xSemaphoreGive(device_disconnected_sem);
-    // }
-    // if (device_paused_sem != NULL)
-    // {
-    //     xSemaphoreGive(device_paused_sem);
-    // }
-    while (s_cdc_ecm_task_handle != NULL)
-    {
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
+//     // if (device_disconnected_sem != NULL)
+//     // {
+//     //     xSemaphoreGive(device_disconnected_sem);
+//     // }
+//     // if (device_paused_sem != NULL)
+//     // {
+//     //     xSemaphoreGive(device_paused_sem);
+//     // }
+//     // while (s_cdc_ecm_task_handle != NULL)
+//     // {
+//     //     vTaskDelay(pdMS_TO_TICKS(10));
+//     // }
+// }
 
 // Called from outside (e.g. charging_callback) to request a clean shutdown
-void cdc_ecm_request_stop(void)
+void cdc_ecm_deinit(void)
 {
     s_stop_requested = true;
 
@@ -1959,4 +1963,9 @@ void cdc_ecm_request_stop(void)
 bool cdc_ecm_is_stop_requested(void)
 {
     return s_stop_requested;
+}
+
+bool cdc_ecm_is_task_running(void)
+{
+    return s_cdc_ecm_task_handle != NULL;
 }
