@@ -21,6 +21,7 @@
 #include "esp_netif.h"
 #include "esp_eth.h"
 #include "esp_mac.h"
+#include "esp_heap_caps.h"
 
 #include "usb/usb_host.h"
 #include "cdc_ecm_host.h"
@@ -1776,6 +1777,11 @@ static void cdc_ecm_task(void *arg)
 
     // Create a task that will handle USB library events
     BaseType_t task_created = xTaskCreateWithCaps(usb_lib_task, "usb_lib", 4096, xTaskGetCurrentTaskHandle(), CDC_ECM_USB_HOST_PRIORITY, &s_usb_lib_task_handle, MALLOC_CAP_SPIRAM);
+    if (task_created != pdTRUE)
+    {
+        ESP_LOGW(TAG, "Falling back to internal RAM for usb_lib_task stack");
+        task_created = xTaskCreateWithCaps(usb_lib_task, "usb_lib", 4096, xTaskGetCurrentTaskHandle(), CDC_ECM_USB_HOST_PRIORITY, &s_usb_lib_task_handle, MALLOC_CAP_INTERNAL);
+    }
     assert(task_created == pdTRUE);
 
     while (!s_stop_requested)
@@ -1909,7 +1915,12 @@ void cdc_ecm_init(cdc_ecm_params_t *cdc_ecm_params)
     assert(cdc_ecm_params != NULL);
     s_stop_requested = false;
     // Create the task that handles the host installation and connection loop.
-    BaseType_t task_created = xTaskCreateWithCaps(cdc_ecm_task, "cdc_ecm_task", 1024 * 4, cdc_ecm_params, CDC_ECM_USB_HOST_PRIORITY, &s_cdc_ecm_task_handle, MALLOC_CAP_SPIRAM);
+    BaseType_t task_created = xTaskCreateWithCaps(cdc_ecm_task, "cdc_ecm_task", 1024 * 6, cdc_ecm_params, CDC_ECM_USB_HOST_PRIORITY, &s_cdc_ecm_task_handle, MALLOC_CAP_SPIRAM);
+    if (task_created != pdTRUE)
+    {
+        ESP_LOGW(TAG, "Falling back to internal RAM for cdc_ecm_task stack");
+        task_created = xTaskCreateWithCaps(cdc_ecm_task, "cdc_ecm_task", 1024 * 6, cdc_ecm_params, CDC_ECM_USB_HOST_PRIORITY, &s_cdc_ecm_task_handle, MALLOC_CAP_INTERNAL);
+    }
     assert(task_created == pdTRUE);
 }
 
