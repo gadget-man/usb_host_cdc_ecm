@@ -62,7 +62,6 @@ static portMUX_TYPE cdc_ecm_lock = portMUX_INITIALIZER_UNLOCKED;
 cdc_ecm_dev_hdl_t cdc_dev = NULL;
 esp_netif_t *usb_netif = NULL;
 static SemaphoreHandle_t device_disconnected_sem;
-// static SemaphoreHandle_t device_paused_sem;
 
 static bool network_connected = false;
 uint32_t link_speed = 0;
@@ -1765,8 +1764,6 @@ static void cdc_ecm_task(void *arg)
 
     device_disconnected_sem = xSemaphoreCreateBinary();
     assert(device_disconnected_sem);
-    // device_paused_sem = xSemaphoreCreateBinary();
-    // assert(device_paused_sem);
 
     // Install USB Host driver (should only be done once)
     ESP_LOGI(TAG, "Installing USB Host");
@@ -1901,8 +1898,6 @@ static void cdc_ecm_task(void *arg)
     }
     vSemaphoreDelete(device_disconnected_sem);
     device_disconnected_sem = NULL;
-    // vSemaphoreDelete(device_paused_sem);
-    // device_paused_sem = NULL;
     s_cdc_ecm_task_handle = NULL;
     vTaskDelete(NULL);
 }
