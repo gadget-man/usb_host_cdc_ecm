@@ -685,12 +685,14 @@ err:
 
 esp_err_t cdc_ecm_host_open(uint16_t vid, uint16_t pid, uint8_t interface_idx, const cdc_ecm_host_device_config_t *dev_config, cdc_ecm_dev_hdl_t *cdc_hdl_ret)
 {
-    esp_err_t ret;
+    esp_err_t ret = ESP_OK;
     uint8_t mac_str_idx = 0xff;
 
     CDC_ECM_CHECK(p_cdc_ecm_obj, ESP_ERR_INVALID_STATE);
     CDC_ECM_CHECK(dev_config, ESP_ERR_INVALID_ARG);
     CDC_ECM_CHECK(cdc_hdl_ret, ESP_ERR_INVALID_ARG);
+
+    *cdc_hdl_ret = NULL; // only set on success
 
     xSemaphoreTake(p_cdc_ecm_obj->open_close_mutex, portMAX_DELAY);
     // Find underlying USB device
@@ -713,6 +715,23 @@ esp_err_t cdc_ecm_host_open(uint16_t vid, uint16_t pid, uint8_t interface_idx, c
     ESP_GOTO_ON_ERROR(
         cdc_parse_interface_descriptor(device_desc, config_desc, interface_idx, &cdc_info),
         err, TAG, "Could not open required interface as CDC");
+
+    // Validate parsed pointers before use/logging
+    if (!cdc_info.data_intf || !cdc_info.in_ep || !cdc_info.out_ep)
+    {
+        ESP_LOGE(TAG, "CDC parse returned missing descriptors (data_intf=%p in_ep=%p out_ep=%p)",
+                 cdc_info.data_intf, cdc_info.in_ep, cdc_info.out_ep);
+        ret = ESP_ERR_INVALID_RESPONSE;
+        goto err;
+    }
+    // notif_ep is optional depending on device, but if notif_intf exists we expect notif_ep too
+    if (cdc_info.notif_intf && !cdc_info.notif_ep)
+    {
+        ESP_LOGE(TAG, "CDC parse returned notif_intf but missing notif_ep (notif_intf=%p notif_ep=%p)",
+                 cdc_info.notif_intf, cdc_info.notif_ep);
+        ret = ESP_ERR_INVALID_RESPONSE;
+        goto err;
+    }
 
     // Save all members of cdc_dev
     cdc_dev->data.intf_desc = cdc_info.data_intf;
@@ -737,15 +756,13 @@ esp_err_t cdc_ecm_host_open(uint16_t vid, uint16_t pid, uint8_t interface_idx, c
         cdc_ecm_transfers_allocate(cdc_dev, cdc_info.notif_ep, cdc_info.in_ep, in_buf_size, cdc_info.out_ep, dev_config->out_buffer_size),
         err, TAG, ); // TODO: update buffers based on device configuration values.
     ESP_GOTO_ON_ERROR(cdc_ecm_start(cdc_dev, dev_config->event_cb, dev_config->data_cb, dev_config->user_arg), err, TAG, );
-    *cdc_hdl_ret = (cdc_ecm_dev_hdl_t)cdc_dev;
 
-    esp_err_t err = cdc_ecm_set_interface(cdc_dev);
-    if (err != ESP_OK)
+    ret = cdc_ecm_set_interface(cdc_dev);
+    if (ret != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to set CDC-ECM interface: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Failed to set CDC-ECM interface: %s", esp_err_to_name(ret));
         goto err;
     }
-
     const usb_standard_desc_t *desc;
     ret = cdc_ecm_host_cdc_desc_get(cdc_dev, USB_CDC_DESC_SUBTYPE_ETH, &desc);
     if (ret == ESP_OK && desc)
@@ -757,13 +774,19 @@ esp_err_t cdc_ecm_host_open(uint16_t vid, uint16_t pid, uint8_t interface_idx, c
         if (mac_str_idx == 0xff)
         {
             ESP_LOGE(TAG, "Could not find cdc ecm mac string\r\n");
+            ret = ESP_ERR_INVALID_RESPONSE;
             goto err;
         }
     }
     else
     {
         ESP_LOGE(TAG, "CDC Ethernet descriptor not found");
+        ret = (ret == ESP_OK) ? ESP_ERR_INVALID_RESPONSE : ret;
+        goto err;
     }
+
+    // Success: only publish handle when all required setup has completed
+    *cdc_hdl_ret = (cdc_ecm_dev_hdl_t)cdc_dev;
 
     // Optional: Set Ethernet Packet Filter
     // err = cdc_ecm_set_packet_filter(cdc_dev, 0x001C);
