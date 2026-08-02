@@ -1535,12 +1535,15 @@ static bool handle_rx(const uint8_t *data, size_t data_len, void *arg)
     }
     memcpy(rx_buffer, data, data_len); // Copy data into a persistent buffer
 
-    // Pass the copied buffer instead of the original `data`
+    // Pass the copied buffer instead of the original `data`.
+    // NOTE: esp_netif_receive() takes ownership of rx_buffer on ALL paths,
+    // including its error returns (netif not up yet, pbuf alloc fail, input
+    // error) — the buffer is freed via the driver_free_rx_buffer callback
+    // (l2_free). Do NOT free it here or it double-frees (tlsf panic).
     esp_err_t err = esp_netif_receive(usb_netif, rx_buffer, data_len, NULL);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to receive data: %s", esp_err_to_name(err));
-        free(rx_buffer); // Free allocated buffer on failure
         return false;
     }
     return true;
