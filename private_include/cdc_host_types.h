@@ -30,6 +30,7 @@ struct cdc_dev_s
         uint8_t *in_data_buffer_base;     // Pointer to IN data buffer in usb_transfer_t
         const usb_intf_desc_t *intf_desc; // Pointer to data interface descriptor
         SemaphoreHandle_t out_mux;        // OUT mutex
+        uint32_t in_err_count;            // Consecutive IN transfer errors (reset on a completed transfer)
     } data;
 
     struct

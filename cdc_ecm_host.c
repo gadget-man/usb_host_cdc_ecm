@@ -42,6 +42,7 @@ static esp_pm_lock_handle_t s_cdc_ecm_pm_lock = NULL;
 #define CDC_ECM_CTRL_TIMEOUT_MS (5000)  // Every CDC device should be able to respond to CTRL transfer in 5 seconds
 #define CDC_ECM_USB_HOST_PRIORITY (15)
 #define CDC_ECM_USB_HOST_CORE (1) // Keep USB host (tasks + DWC ISR) off core 0, where BT + WiFi live
+#define CDC_ECM_IN_MAX_CONSECUTIVE_ERRORS (20) // Trigger a reconnect after this many back-to-back IN errors
 
 // CDC-ECM spinlock
 static portMUX_TYPE cdc_ecm_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -1051,9 +1052,47 @@ static void in_xfer_cb(usb_transfer_t *transfer)
     ESP_LOGV(TAG, "in xfer cb");
     cdc_dev_t *cdc_dev = (cdc_dev_t *)transfer->context;
 
-    if (!cdc_ecm_is_transfer_completed(transfer))
+    switch (transfer->status)
     {
+    case USB_TRANSFER_STATUS_COMPLETED:
+        cdc_dev->data.in_err_count = 0; // Healthy transfer: clear the error streak
+        break;
+
+    case USB_TRANSFER_STATUS_NO_DEVICE:
+    case USB_TRANSFER_STATUS_CANCELED:
+        // Device gone or teardown in progress: do not re-arm. The disconnect/
+        // teardown path owns recovery from here.
         return;
+
+    default:
+        // ERROR / TIMED_OUT / STALL / OVERFLOW / SKIPPED. Notify the application,
+        // then recover so RX polling does not silently die on a transient error.
+        if (cdc_dev->notif.cb)
+        {
+            const cdc_ecm_host_dev_event_data_t error_event = {
+                .type = CDC_ECM_HOST_EVENT_ERROR,
+                .data.error = (int)transfer->status};
+            cdc_dev->notif.cb(&error_event, cdc_dev->cb_arg);
+        }
+
+        if (++cdc_dev->data.in_err_count > CDC_ECM_IN_MAX_CONSECUTIVE_ERRORS)
+        {
+            // Persistent failure (e.g. a halted endpoint we cannot drain here):
+            // stop polling and ask the connection loop to tear down and reconnect.
+            ESP_LOGE(TAG, "IN transfer failing repeatedly (%" PRIu32 ", status=%d), triggering reconnect",
+                     cdc_dev->data.in_err_count, (int)transfer->status);
+            if (device_disconnected_sem)
+            {
+                xSemaphoreGive(device_disconnected_sem);
+            }
+            return;
+        }
+
+        // Transient error: reset the buffer back to base and re-arm the poll.
+        ESP_LOGW(TAG, "IN transfer error (status=%d), re-arming (%" PRIu32 "/%d)",
+                 (int)transfer->status, cdc_dev->data.in_err_count, CDC_ECM_IN_MAX_CONSECUTIVE_ERRORS);
+        cdc_ecm_reset_in_transfer(cdc_dev);
+        goto resubmit;
     }
 
     if (cdc_dev->data.in_cb)
@@ -1105,8 +1144,21 @@ static void in_xfer_cb(usb_transfer_t *transfer)
         }
     }
 
+resubmit:
     ESP_LOGV(TAG, "Submitting poll for BULK IN transfer");
-    usb_host_transfer_submit(cdc_dev->data.in_xfer);
+    {
+        const esp_err_t sub_err = usb_host_transfer_submit(cdc_dev->data.in_xfer);
+        if (sub_err != ESP_OK)
+        {
+            // Could not re-arm the poll (e.g. endpoint halted). Trigger a reconnect
+            // instead of leaving RX permanently stalled.
+            ESP_LOGE(TAG, "Failed to resubmit IN transfer: %s", esp_err_to_name(sub_err));
+            if (device_disconnected_sem)
+            {
+                xSemaphoreGive(device_disconnected_sem);
+            }
+        }
+    }
 }
 
 static void notif_xfer_cb(usb_transfer_t *transfer)
