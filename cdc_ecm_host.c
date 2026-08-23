@@ -22,6 +22,7 @@
 #include "esp_eth.h"
 #include "esp_mac.h"
 #include "esp_heap_caps.h"
+#include "esp_pm.h"
 
 #include "usb/usb_host.h"
 #include "cdc_ecm_host.h"
@@ -30,10 +31,17 @@
 
 static const char *TAG = "cdc_ecm";
 
+#ifdef CONFIG_PM_ENABLE
+// Held while the USB host driver is installed to keep peripheral clocks alive
+// (USB host is unrelated to the TinyUSB-device NO_LIGHT_SLEEP lock in ipb_usb).
+static esp_pm_lock_handle_t s_cdc_ecm_pm_lock = NULL;
+#endif
+
 // Control transfer constants
 #define CDC_ECM_CTRL_TRANSFER_SIZE (64) // All standard CTRL requests and responses fit in this size
 #define CDC_ECM_CTRL_TIMEOUT_MS (5000)  // Every CDC device should be able to respond to CTRL transfer in 5 seconds
 #define CDC_ECM_USB_HOST_PRIORITY (15)
+#define CDC_ECM_USB_HOST_CORE (1) // Keep USB host (tasks + DWC ISR) off core 0, where BT + WiFi live
 
 // CDC-ECM spinlock
 static portMUX_TYPE cdc_ecm_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -95,7 +103,7 @@ static cdc_ecm_obj_t *p_cdc_ecm_obj = NULL;
 static const cdc_ecm_host_driver_config_t cdc_ecm_driver_config_default = {
     .driver_task_stack_size = 4096,
     .driver_task_priority = 10,
-    .xCoreID = 0,
+    .xCoreID = CDC_ECM_USB_HOST_CORE,
     .new_dev_cb = NULL,
 };
 
@@ -443,6 +451,15 @@ esp_err_t cdc_ecm_host_install(const cdc_ecm_host_driver_config_t *driver_config
     }
     CDC_ECM_EXIT_CRITICAL();
 
+#ifdef CONFIG_PM_ENABLE
+    // Keep peripheral clocks alive while the USB host driver is installed
+    if (s_cdc_ecm_pm_lock == NULL &&
+        esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "cdc_ecm", &s_cdc_ecm_pm_lock) == ESP_OK)
+    {
+        esp_pm_lock_acquire(s_cdc_ecm_pm_lock);
+    }
+#endif
+
     // Everything OK: Start CDC-Driver task and return
     xTaskNotifyGive(driver_task_h);
     return ESP_OK;
@@ -532,6 +549,15 @@ esp_err_t cdc_ecm_host_uninstall(void)
         ret = ESP_ERR_TIMEOUT;
         goto unblock;
     }
+
+#ifdef CONFIG_PM_ENABLE
+    if (s_cdc_ecm_pm_lock)
+    {
+        esp_pm_lock_release(s_cdc_ecm_pm_lock);
+        esp_pm_lock_delete(s_cdc_ecm_pm_lock);
+        s_cdc_ecm_pm_lock = NULL;
+    }
+#endif
 
     // Free remaining resources
     vEventGroupDelete(cdc_ecm_obj->event_group);
@@ -1871,11 +1897,11 @@ static void cdc_ecm_task(void *arg)
     ESP_ERROR_CHECK(usb_host_install(&host_config));
 
     // Create a task that will handle USB library events
-    BaseType_t task_created = xTaskCreateWithCaps(usb_lib_task, "usb_lib", 4096, xTaskGetCurrentTaskHandle(), CDC_ECM_USB_HOST_PRIORITY, &s_usb_lib_task_handle, MALLOC_CAP_SPIRAM);
+    BaseType_t task_created = xTaskCreatePinnedToCoreWithCaps(usb_lib_task, "usb_lib", 4096, xTaskGetCurrentTaskHandle(), CDC_ECM_USB_HOST_PRIORITY, &s_usb_lib_task_handle, CDC_ECM_USB_HOST_CORE, MALLOC_CAP_SPIRAM);
     if (task_created != pdTRUE)
     {
         ESP_LOGW(TAG, "Falling back to internal RAM for usb_lib_task stack");
-        task_created = xTaskCreateWithCaps(usb_lib_task, "usb_lib", 4096, xTaskGetCurrentTaskHandle(), CDC_ECM_USB_HOST_PRIORITY, &s_usb_lib_task_handle, MALLOC_CAP_INTERNAL);
+        task_created = xTaskCreatePinnedToCoreWithCaps(usb_lib_task, "usb_lib", 4096, xTaskGetCurrentTaskHandle(), CDC_ECM_USB_HOST_PRIORITY, &s_usb_lib_task_handle, CDC_ECM_USB_HOST_CORE, MALLOC_CAP_INTERNAL);
     }
     assert(task_created == pdTRUE);
 
@@ -2017,11 +2043,11 @@ void cdc_ecm_init(cdc_ecm_params_t *cdc_ecm_params)
     assert(cdc_ecm_params != NULL);
     s_stop_requested = false;
     // Create the task that handles the host installation and connection loop.
-    BaseType_t task_created = xTaskCreateWithCaps(cdc_ecm_task, "cdc_ecm_task", 1024 * 6, cdc_ecm_params, CDC_ECM_USB_HOST_PRIORITY, &s_cdc_ecm_task_handle, MALLOC_CAP_SPIRAM);
+    BaseType_t task_created = xTaskCreatePinnedToCoreWithCaps(cdc_ecm_task, "cdc_ecm_task", 1024 * 6, cdc_ecm_params, CDC_ECM_USB_HOST_PRIORITY, &s_cdc_ecm_task_handle, CDC_ECM_USB_HOST_CORE, MALLOC_CAP_SPIRAM);
     if (task_created != pdTRUE)
     {
         ESP_LOGW(TAG, "Falling back to internal RAM for cdc_ecm_task stack");
-        task_created = xTaskCreateWithCaps(cdc_ecm_task, "cdc_ecm_task", 1024 * 6, cdc_ecm_params, CDC_ECM_USB_HOST_PRIORITY, &s_cdc_ecm_task_handle, MALLOC_CAP_INTERNAL);
+        task_created = xTaskCreatePinnedToCoreWithCaps(cdc_ecm_task, "cdc_ecm_task", 1024 * 6, cdc_ecm_params, CDC_ECM_USB_HOST_PRIORITY, &s_cdc_ecm_task_handle, CDC_ECM_USB_HOST_CORE, MALLOC_CAP_INTERNAL);
     }
     assert(task_created == pdTRUE);
 }
