@@ -189,7 +189,14 @@ static void cdc_ecm_client_task(void *arg)
     }
 
     ESP_LOGD(TAG, "Deregistering client");
-    ESP_ERROR_CHECK(usb_host_client_deregister(cdc_ecm_obj->cdc_ecm_client_hdl));
+    // Non-fatal: on an unplug/power-loss the device can vanish mid-teardown, so
+    // usb_host_client_deregister may return ESP_ERR_INVALID_STATE. Don't ESP_ERROR_CHECK
+    // it (that aborts); log and continue so teardown completes cleanly.
+    esp_err_t dreg = usb_host_client_deregister(cdc_ecm_obj->cdc_ecm_client_hdl);
+    if (dreg != ESP_OK)
+    {
+        ESP_LOGW(TAG, "usb_host_client_deregister failed during teardown: %s", esp_err_to_name(dreg));
+    }
     xEventGroupSetBits(cdc_ecm_obj->event_group, CDC_ECM_TEARDOWN_COMPLETE);
     vTaskDelete(NULL);
 }
